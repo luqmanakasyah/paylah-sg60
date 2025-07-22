@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Hawker Centre Map</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        #map {
+            height: 100vh;
+            width: 100vw;
+        }
+
+        .popup-title {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map').setView([1.3521, 103.8198], 11); // Singapore center
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: 'Map data © OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Load data
+        fetch('merchant_list.json')
+            .then(res => res.json())
+            .then(data => {
+                const allLocations = [];
+
+                ['Hawker Centres', 'Coffeeshops', 'Industrial Canteens'].forEach(section => {
+                    data[section].forEach(place => {
+                        allLocations.push({
+                            type: section,
+                            name: place.name,
+                            address: place.address,
+                            stalls: place.stalls
+                        });
+                    });
+                });
+
+                // Helper: delay per geocode to avoid rate-limit
+                const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+                async function geocodeAndPlot() {
+                    for (const loc of allLocations) {
+                        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(loc.address + ', Singapore')}`;
+                        try {
+                            const res = await fetch(url);
+                            const json = await res.json();
+                            if (json.length > 0) {
+                                const lat = json[0].lat;
+                                const lon = json[0].lon;
+
+                                const popupHtml = `
+                  <div class="popup-title">${loc.name}</div>
+                  <div><strong>${loc.address}</strong></div>
+                  <ul style="padding-left: 20px; max-height: 200px; overflow-y: auto;">
+                    ${loc.stalls.map(s => `<li>${s.stall_name} (${s.unit_no})</li>`).join('')}
+                  </ul>
+                `;
+
+                                L.marker([lat, lon]).addTo(map)
+                                    .bindPopup(popupHtml);
+
+                                await delay(1000); // delay to avoid throttling
+                            }
+                        } catch (e) {
+                            console.error('Geocoding error for:', loc.address, e);
+                        }
+                    }
+                }
+
+                geocodeAndPlot();
+            });
+    </script>
+</body>
+
+</html>
