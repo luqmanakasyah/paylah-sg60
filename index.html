@@ -108,9 +108,39 @@
       // overwhelming the free Nominatim API.  For large data sets this will
       // result in a noticeable loading delay; however it’s a responsible
       // trade‑off for reliability.
+
+      // Track how many markers have been placed at the same rounded
+      // coordinates.  Nominatim sometimes returns identical lat/lon for
+      // different venues; if we plot markers with the exact same values
+      // they will overlap and be impossible to click individually.  To
+      // mitigate this, we slightly offset each subsequent marker at the
+      // same location.  We use the lat/lon rounded to 5 decimal places
+      // (~1 metre precision) as the key.  When a duplicate is detected,
+      // markers are placed in a radial pattern around the original
+      // coordinate.
+      const coordCounts = {};
       for (const venue of venues) {
         const coords = await geocode(venue.address);
         if (!coords) continue;
+
+        // Determine how many markers already exist at this location
+        const key = coords.lat.toFixed(5) + ',' + coords.lon.toFixed(5);
+        if (!coordCounts[key]) {
+          coordCounts[key] = 0;
+        }
+        const duplicateIndex = coordCounts[key]++;
+
+        // Offset subsequent markers in a circular pattern.  The offset
+        // distance is small (approx. 15 metres) so that markers remain
+        // close to their true location but are distinguishable.  Angles
+        // step through 45° increments to distribute points evenly.
+        const offsetDistance = 0.00015;
+        const angleRad = (duplicateIndex * 45) * Math.PI / 180;
+        const latOffset = offsetDistance * Math.cos(angleRad);
+        const lonOffset = offsetDistance * Math.sin(angleRad);
+        const adjLat = coords.lat + latOffset;
+        const adjLon = coords.lon + lonOffset;
+
         // Build a popup listing the venue and stalls.  HTML is escaped for
         // stall names to avoid issues with special characters.
         let popupHtml = `<strong>${venue.name}</strong><br>${venue.address}<br><em>${venue.category}</em><br>`;
@@ -121,7 +151,7 @@
           popupHtml += `<tr><td>${safeName}</td><td>${unit}</td></tr>`;
         }
         popupHtml += '</table></div>';
-        const marker = L.marker([coords.lat, coords.lon]);
+        const marker = L.marker([adjLat, adjLon]);
         marker.bindPopup(popupHtml);
         markers.addLayer(marker);
       }
