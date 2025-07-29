@@ -1,96 +1,135 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
-    <meta charset="utf-8" />
-    <title>Hawker Centre Map</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <style>
-        #map {
-            height: 100vh;
-            width: 100vw;
-        }
-
-        .popup-title {
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-    </style>
+  <meta charset="utf-8">
+  <title>POSB PayLah SG60 Merchants Map</title>
+  <!--
+    This page visualises the hawker centres, coffeeshops and industrial canteens
+    participating in the POSB PayLah SG60 promotion.  The data is loaded
+    dynamically from the accompanying sg60_merchants.json file and geocoded
+    on‑the‑fly using OpenStreetMap’s Nominatim service.  A Leaflet map is
+    employed to display markers for each venue, clustered to remain
+    performant even with hundreds of points.  Each marker’s popup lists
+    every stall at that venue with its unit number when available.
+  -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
+        integrity="sha256-VHwjz6zQ8dS+GY+x5j9N8QNttUTJcHh0nUFLwJefkKE="
+        crossorigin=""/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css" />
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+    }
+    h1 {
+      margin: 0;
+      padding: 1rem;
+      background: #f0f0f0;
+      font-size: 1.5rem;
+      text-align: center;
+    }
+    #map {
+      height: calc(100vh - 3rem);
+      width: 100%;
+    }
+    /* limit the popup height so long stall lists don’t overflow the screen */
+    .popup-stalls {
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+    td {
+      padding: 2px 4px;
+      vertical-align: top;
+    }
+    td:nth-child(2) {
+      text-align: right;
+      white-space: nowrap;
+    }
+  </style>
 </head>
-
 <body>
-    <div id="map"></div>
+  <h1>POSB PayLah SG60 Merchants Map</h1>
+  <div id="map"></div>
 
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-    <script>
-        const map = L.map('map').setView([1.3521, 103.8198], 11); // Singapore center
+  <!-- Leaflet JS and marker cluster plugin -->
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"
+          integrity="sha256-oXzT8NpI603J8CtmNXuqFX9z9buC54pVy1QtL5o1wWc="
+          crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+  <script>
+    // Geocode an address using the public Nominatim API.  The query string
+    // includes “Singapore” to improve accuracy and limit results.  If no
+    // result is found this function resolves with null.
+    async function geocode(address) {
+      const url = 'https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(address + ', Singapore');
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          return null;
+        }
+        const data = await response.json();
+        if (data.length > 0) {
+          return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+        }
+      } catch (e) {
+        console.error('Geocoding error for', address, e);
+      }
+      return null;
+    }
 
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: 'Map data © OpenStreetMap contributors'
-        }).addTo(map);
+    // Load the venue data from the JSON file packaged with this site.
+    async function loadData() {
+      const response = await fetch('sg60_merchants.json');
+      if (!response.ok) {
+        throw new Error('Failed to load merchant data');
+      }
+      return response.json();
+    }
 
-        // Load data
-        fetch('geo_merchant_list.json')
-            .then(res => res.json())
-            .then(data => {
-                const allLocations = [];
+    async function init() {
+      // Initialise the map centred roughly on Singapore.
+      const map = L.map('map').setView([1.3521, 103.8198], 11);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
 
-                // Multiple sections: "Hawker Centres", "Coffeeshops", "Industrial Canteens"
-                ["Hawker Centres", "Coffeeshops", "Industrial Canteens"].forEach(section => {
-                    data[section]?.forEach(place => {
-                        allLocations.push({
-                            name: place.name,
-                            address: place.address,
-                            stalls: place.stalls,
-                            lat: place.lat,
-                            lon: place.lon
-                        });
-                    });
-                });
+      // Create a marker cluster group to handle large numbers of markers.
+      const markers = L.markerClusterGroup();
 
-                const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const venues = await loadData();
 
-                async function geocodeAndPlot() {
-                    for (const loc of allLocations) {
-                        let lat = loc.lat;
-                        let lon = loc.lon;
+      // Sequentially geocode each venue and add its marker.  Geocoding is
+      // intentionally performed one after another to mitigate the risk of
+      // overwhelming the free Nominatim API.  For large data sets this will
+      // result in a noticeable loading delay; however it’s a responsible
+      // trade‑off for reliability.
+      for (const venue of venues) {
+        const coords = await geocode(venue.address);
+        if (!coords) continue;
+        // Build a popup listing the venue and stalls.  HTML is escaped for
+        // stall names to avoid issues with special characters.
+        let popupHtml = `<strong>${venue.name}</strong><br>${venue.address}<br><em>${venue.category}</em><br>`;
+        popupHtml += '<div class="popup-stalls"><table>';
+        for (const stall of venue.stalls) {
+          const safeName = stall.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          const unit = stall.unit ? stall.unit : '';
+          popupHtml += `<tr><td>${safeName}</td><td>${unit}</td></tr>`;
+        }
+        popupHtml += '</table></div>';
+        const marker = L.marker([coords.lat, coords.lon]);
+        marker.bindPopup(popupHtml);
+        markers.addLayer(marker);
+      }
+      map.addLayer(markers);
+    }
 
-                        if (lat == null || lon == null) {
-                            const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(loc.address + ', Singapore')}`;
-                            try {
-                                const res = await fetch(url);
-                                const json = await res.json();
-                                if (json.length > 0) {
-                                    lat = json[0].lat;
-                                    lon = json[0].lon;
-                                } else {
-                                    console.warn('No geocode result for:', loc.address);
-                                    continue;
-                                }
-                                await delay(1000); // avoid rate limit
-                            } catch (e) {
-                                console.error('Geocoding error for:', loc.address, e);
-                                continue;
-                            }
-                        }
-
-                        const popupHtml = `
-                            <div class="popup-title">${loc.name}</div>
-                            <div><strong>${loc.address}</strong></div>
-                            <ul style="padding-left: 20px; max-height: 200px; overflow-y: auto;">
-                                ${loc.stalls.map(s => `<li>${s.stall_name} (${s.unit_no})</li>`).join('')}
-                            </ul>
-                        `;
-
-                        L.marker([lat, lon]).addTo(map)
-                            .bindPopup(popupHtml);
-                    }
-                }
-
-                geocodeAndPlot();
-            });
-    </script>
+    // Kick off the initialisation once the page has loaded.
+    init().catch(err => console.error(err));
+  </script>
 </body>
-
 </html>
